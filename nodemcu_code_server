@@ -1,0 +1,272 @@
+#include <ESP8266WiFi.h>
+
+const char* ssid = "DistanceSensor";
+const char* password = "12345678";
+const uint8_t TRIG_PIN = D1;
+const uint8_t ECHO_PIN = D2;
+WiFiServer server(80);
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  WiFi.softAP(ssid, password);
+  Serial.print("AP IP: "); Serial.println(WiFi.softAPIP());
+  server.begin();
+}
+
+float measureDistanceCM() {
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(TRIG_PIN, LOW);
+  long d = pulseIn(ECHO_PIN, HIGH, 30000);
+  if (d == 0) return -1.0f;
+  return (d * 0.0343f) / 2.0f;
+}
+
+void loop() {
+  WiFiClient client = server.available();
+  if (!client) return;
+
+  String req = client.readStringUntil('\r');
+  while (client.available()) client.read();
+
+  if (req.startsWith("GET /distance")) {
+    float cm = measureDistanceCM();
+    if (cm < 0) cm = 0;
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/plain");
+    client.println("Cache-Control: no-cache, no-store, must-revalidate");
+    client.println("Pragma: no-cache");
+    client.println("Expires: 0");
+    client.println("Connection: close");
+    client.println();
+    client.print(cm, 1);
+  } else {
+    client.println("HTTP/1.1 200 OK");
+    client.println("Content-Type: text/html");
+    client.println("Cache-Control: no-cache, no-store, must-revalidate");
+    client.println("Pragma: no-cache");
+    client.println("Expires: 0");
+    client.println("Connection: close");
+    client.println();
+    client.print(R"rawliteral(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wireless Measuring Device</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #4a00e0;
+      --accent: #8e2de2;
+      --light: #f5f5f5;
+      --dark: #333;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Poppins', sans-serif;
+      background: linear-gradient(135deg, var(--accent), var(--primary));
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      color: var(--dark);
+    }
+    .card {
+      background: var(--light);
+      border-radius: 20px;
+      padding: 30px;
+      box-shadow: 0 8px 20px rgba(0,0,0,0.2);
+      width: 90%;
+      max-width: 400px;
+      text-align: center;
+    }
+    h1 {
+      color: var(--primary);
+      margin-bottom: 10px;
+      font-weight: 700;
+    }
+    #distanceVal {
+      font-size: 3rem;
+      font-weight: 600;
+      color: var(--dark);
+    }
+    .controls, .settings {
+      margin: 20px 0;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 10px;
+    }
+    select, input, button {
+      font-size: 1rem;
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #fff;
+      color: var(--dark);
+      outline: none;
+      transition: transform 0.2s;
+    }
+    select:focus, input:focus { transform: scale(1.02); }
+    button {
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      cursor: pointer;
+    }
+    button:hover { background: var(--accent); transform: translateY(-2px); }
+    #lastUpdate {
+      font-size: 0.85rem;
+      color: #555;
+      margin-top: 10px;
+    }
+    .team {
+      font-size: 0.75rem;
+      color: #777;
+      margin-top: 20px;
+      border-top: 1px solid #ddd;
+      padding-top: 10px;
+    }
+    #progress {
+      width: 100%; height: 8px; background: #ddd;
+      border-radius: 4px; overflow: hidden; margin: 10px 0;
+    }
+    #progressBar {
+      height: 100%; width: 0%; background: var(--primary);
+      transition: width 0.3s ease;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>📏 Wireless Measuring Device</h1>
+    <div id="progress"><div id="progressBar"></div></div>
+    <span id="distanceVal">0.0 cm</span>
+
+    <div class="controls">
+      <select id="unitSelect">
+        <option value="cm">cm</option>
+        <option value="m">m</option>
+        <option value="in">in</option>
+        <option value="ft">ft</option>
+      </select>
+      <button id="pauseBtn">Pause</button>
+      <button id="refreshBtn">Refresh</button>
+    </div>
+
+    <div class="settings">
+      <label>Refresh (ms): <input id="refreshRateInput" type="number" value="500" style="width:80px;"></label>
+      <label>Alert Above (cm): <input id="thresholdInput" type="number" placeholder="e.g. 20"></label>
+      <button id="setThresholdBtn">Set Alert</button>
+      <button id="downloadBtn">Download Log</button>
+      <button id="clearLogBtn">Clear Log</button>
+    </div>
+
+    <div id="lastUpdate">Last: --:--:--</div>
+    <div class="team"><strong>Team:</strong> Abhinav • Dev • Aditya • Akash • Alok</div>
+  </div>
+
+  <script>
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    function playMelody({ volume = 1 } = {}) {
+      const now = audioCtx.currentTime;
+      const notes = [440, 523.25, 659.25];
+      notes.forEach((f, i) => {
+        const t = now + i * 0.2;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(f, t);
+        gain.gain.setValueAtTime(volume, t);
+        gain.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+        osc.connect(gain).connect(audioCtx.destination);
+        osc.start(t);
+        osc.stop(t + 0.18);
+      });
+    }
+
+    let unit = 'cm', paused = false, threshold = null;
+    let logData = [], refreshInterval = 500, scheduleId;
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('unitSelect').onchange = e => unit = e.target.value;
+      document.getElementById('pauseBtn').onclick = togglePause;
+      document.getElementById('setThresholdBtn').onclick = setThreshold;
+      document.getElementById('downloadBtn').onclick = downloadLog;
+      document.getElementById('clearLogBtn').onclick = clearLog;
+      document.getElementById('refreshBtn').onclick = update;
+      document.getElementById('refreshRateInput').onchange = e => {
+        const v = parseInt(e.target.value);
+        if (!isNaN(v) && v > 100) { refreshInterval = v; restartScheduler(); }
+      };
+      startScheduler();
+    });
+
+    function togglePause() {
+      paused = !paused;
+      document.getElementById('pauseBtn').textContent = paused ? 'Resume' : 'Pause';
+    }
+    function setThreshold() {
+      const v = parseFloat(document.getElementById('thresholdInput').value);
+      threshold = isNaN(v) ? null : v;
+    }
+    function startScheduler() {
+      scheduleId = setTimeout(() => { update().then(startScheduler); }, refreshInterval);
+    }
+    function restartScheduler() {
+      clearTimeout(scheduleId);
+      startScheduler();
+    }
+
+    async function update() {
+      if (paused) return;
+      try {
+        const res = await fetch('/distance', { cache: 'no-store' });
+        const cm = parseFloat(await res.text());
+        const now = new Date(), t = now.toLocaleTimeString();
+        logData.push({ t: t, d: cm.toFixed(1) });
+        const val = { cm: cm, m: cm/100, in: cm/2.54, ft: cm/2.54/12 }[unit];
+        const prec = (unit==='cm'||unit==='in')?1:2;
+        const el = document.getElementById('distanceVal');
+        el.textContent = val.toFixed(prec) + ' ' + unit;
+        document.getElementById('lastUpdate').textContent = 'Last: ' + t;
+        document.getElementById('progressBar').style.width = Math.min(100, cm*2) + '%';
+        if (threshold!==null && cm > threshold) {
+          el.style.color = 'red';
+          playMelody();
+        } else {
+          el.style.color = getComputedStyle(document.body).getPropertyValue('--dark').trim();
+        }
+      } catch(err) { console.error(err); }
+    }
+
+    function downloadLog() {
+      if (!logData.length) return;
+      const csv = 'timestamp,raw_cm\n' + logData.map(r => `${r.t},${r.d}`).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'distance_log.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    }
+
+    function clearLog() {
+      logData = [];
+    }
+  </script>
+</body>
+</html>
+)rawliteral");
+  }
+}
